@@ -1,161 +1,271 @@
-package com.rakdcolon;
+package com.rakdcolon.classes;
 
-public class Rat {
+import com.rakdcolon.Main;
+
+import java.util.*;
+
+/**
+ * This class is responsible for simulating a bot moving on a grid to find a rat.
+ */
+public class Rat
+{
+    /**
+     * The size of the grid (both width and height).
+     */
     private static final int SIZE = Main.SIZE;
-    private final double ALPHA;
     
-    private final Ship ship;
+    /**
+     * The parameter determining the probability of the rat being detected by the bot.
+     */
+    private static final double ALPHA = Main.ALPHA;
+    
+    /**
+     * Array of directions for navigating the grid.
+     * The directions are: up, down, left, right.
+     */
+    private static final int[] DIRECTIONS = {-SIZE, SIZE, -1, 1};
+    
+    /**
+     * The probability grid representing the likelihood of the rat being in each cell.
+     */
     private final double[] probabilityGrid;
+    
+    /**
+     * The BitSet representing the grid where each cell can be either open (true) or closed (false).
+     */
+    private final BitSet bitGrid;
+    
+    /**
+     * The index of the bot on the grid.
+     */
     private int botIndex;
+    
+    /**
+     * The index of the rat on the grid.
+     */
     private int ratIndex;
     
-    private int timeSteps;
+    /**
+     * The number of time steps taken by the bot to find the rat.
+     */
+    private int timeSteps = 0;
     
-    public Rat(Ship ship, int botIndex, int ts, double alpha) {
-        this.ALPHA = alpha;
-        this.ship = ship;
+    private static final int N = Main.N;
+    private static final int M = Main.M;
+    
+    /**
+     * Constructs a Rat object with the specified grid and bot index.
+     */
+    public Rat (BitSet bitGrid, int botIndex)
+    {
+        this.bitGrid = bitGrid;
         this.botIndex = botIndex;
         this.probabilityGrid = new double[SIZE * SIZE];
-        this.timeSteps = ts;
-        
+    }
+    
+    /**
+     * Runs the simulation of the bot finding the rat.
+     */
+    public void runRatFinder ()
+    {
         int numberOfOpenCells = getNumberOfOpenCells();
-        
-        // Initialize the probability grid with uniform distribution over open cells (excluding bot's position)
         double initialProb = 1.0 / (numberOfOpenCells - 1);
-        for (int index = 0; index < SIZE * SIZE; index++) {
-            if (index != botIndex && ship.isOpen(index)) {
-                probabilityGrid[index] = initialProb;
-            } else {
-                probabilityGrid[index] = 0; // Bot's position or closed cell
-            }
-        }
-        
-        // Randomly place the rat in an open cell that's not the bot's position
-        do {
-            ratIndex = ship.getRandomCell();
-        } while (!ship.isOpen(ratIndex) || ratIndex == botIndex);
-        
-        while (true) {
-            if (Main.VERSION == 2)
+        for (int index = 0; index < SIZE * SIZE; index++)
+        {
+            if (index != botIndex && bitGrid.get(index))
             {
-                for (int i = 0; i < 2; i++)
-                {
-                    ping();
-                }
-                for (int i = 0; i < 7; i++)
-                {
-                    if (move()) return;
-                }
+                probabilityGrid[index] = initialProb;
             }
             else
             {
+                probabilityGrid[index] = 0;
+            }
+        }
+        
+        do
+        {
+            ratIndex = getRandomOpenCell();
+        }
+        while (ratIndex == botIndex);
+        
+        int debugCounter = 0;
+        
+        // Main loop
+        while (debugCounter < 512)
+        {
+            for (int i = 0; i < N; i++)
+            {
                 ping();
-                if (move()) return;
             }
+            if (move()) return;
+            debugCounter++;
         }
+        
+        if (debugCounter == 512) System.err.println("Rat simulation did not converge.");
     }
     
-    private int getNumberOfOpenCells() {
-        int count = 0;
-        for (int i = 0; i < SIZE * SIZE; i++) {
-            if (ship.isOpen(i)) count++;
-        }
-        return count;
+    private int getNumberOfOpenCells ()
+    {
+        return bitGrid.cardinality();
     }
     
-    private boolean move() {
+    private int getRandomOpenCell ()
+    {
+        int index;
+        do
+        {
+            index = (int) (Math.random() * (SIZE * SIZE));
+        }
+        while (!bitGrid.get(index));
+        return index;
+    }
+    
+    private boolean move ()
+    {
         timeSteps++;
-        // Find the cell with the maximum probability
-        double maxProbability = 0.0;
-        int maxIndex = -1;
-        for (int i = 0; i < SIZE * SIZE; i++) {
-            if (i == botIndex) continue; // Skip the bot's position
-            if (probabilityGrid[i] > maxProbability) {
-                maxProbability = probabilityGrid[i];
-                maxIndex = i;
+        
+        // Perform multi-step path evaluation
+        List<Integer> bestPath = findBestPath(botIndex);
+        
+        // Execute the best path step-by-step
+        for (int nextStep : bestPath)
+        {
+            botIndex = nextStep;
+            if (botIndex == ratIndex)
+            {
+                return true; // Bot found the rat
             }
         }
         
-        // Move the bot towards the cell with the highest probability
-        PathFinder pathFinder = new PathFinder(ship);
-        int nextMove = pathFinder.getFirstMove(botIndex, maxIndex);
-        
-        botIndex = nextMove;
-        
-        if (botIndex == ratIndex) {
-            return true;
-        }
-        
+        // Update probabilities after movement
         updateProbabilities();
-        
         return false;
     }
     
-    private void updateProbabilities() {
-        // Zero out the probability at the bot's new position and normalize the probabilities
-        double sumProbabilities = 0.0;
-        for (int i = 0; i < SIZE * SIZE; i++) {
-            if (i == botIndex) {
-                probabilityGrid[i] = 0; // Bot's position
+    private List<Integer> findBestPath (int startIndex)
+    {
+        PriorityQueue<Path> queue = new PriorityQueue<>(Comparator.comparingDouble(path -> -path.cumulativeProbability));
+        queue.add(new Path(startIndex, new ArrayList<>(), probabilityGrid[startIndex]));
+        
+        Path bestPath = null;
+        
+        while (!queue.isEmpty())
+        {
+            Path current = queue.poll();
+            
+            // If we reach the maximum depth or no remaining steps, evaluate the path
+            if (current.steps.size() == Rat.M || current.index == ratIndex)
+            {
+                if (bestPath == null || current.cumulativeProbability > bestPath.cumulativeProbability)
+                {
+                    bestPath = current;
+                }
                 continue;
             }
-            sumProbabilities += probabilityGrid[i];
+            
+            // Explore neighbors
+            for (int direction : DIRECTIONS)
+            {
+                int neighbor = current.index + direction;
+                if (isValidIndex(neighbor) && bitGrid.get(neighbor) && !current.steps.contains(neighbor))
+                {
+                    List<Integer> newPath = new ArrayList<>(current.steps);
+                    newPath.add(neighbor);
+                    double newProbability = current.cumulativeProbability + probabilityGrid[neighbor];
+                    queue.add(new Path(neighbor, newPath, newProbability));
+                }
+            }
         }
         
-        // Normalize the probabilities
-        for (int i = 0; i < SIZE * SIZE; i++) {
-            if (i == botIndex) continue; // Skip the bot's position
-            probabilityGrid[i] /= sumProbabilities;
+        return bestPath != null ? bestPath.steps : new ArrayList<>();
+    }
+    
+    private boolean isValidIndex (int neighbor)
+    {
+        int x = neighbor % SIZE;
+        int y = neighbor / SIZE;
+        return x >= 0 && y >= 0 && y < SIZE;
+    }
+    
+    // Helper class for path evaluation
+    private static class Path
+    {
+        int index;
+        List<Integer> steps;
+        double cumulativeProbability;
+        
+        Path (int index, List<Integer> steps, double cumulativeProbability)
+        {
+            this.index = index;
+            this.steps = steps;
+            this.cumulativeProbability = cumulativeProbability;
         }
     }
     
-    private void ping() {
-        boolean ping = pingDevice();
+    private void updateProbabilities ()
+    {
+        double sumProbabilities = 0.0;
         
+        // Zero out the probability at the bot's position and calculate sum
+        for (int i = 0; i < SIZE * SIZE; i++)
+        {
+            if (i == botIndex)
+            {
+                probabilityGrid[i] = 0;
+            }
+            else
+            {
+                sumProbabilities += probabilityGrid[i];
+            }
+        }
+        
+        // Normalize probabilities
+        for (int i = 0; i < SIZE * SIZE; i++)
+        {
+            if (i != botIndex)
+            {
+                probabilityGrid[i] /= sumProbabilities;
+            }
+        }
+    }
+    
+    private void ping ()
+    {
+        boolean ping = pingDevice();
         double[] posterior = new double[SIZE * SIZE];
         double sumPosterior = 0.0;
         
-        // Update probabilities based on the observation
-        for (int i = 0; i < SIZE * SIZE; i++) {
-            if (i == botIndex) continue; // Skip the bot's position
-            if (!ship.isOpen(i)) {
-                posterior[i] = 0; // Closed cell
-                continue;
-            }
+        for (int i = 0; i < SIZE * SIZE; i++)
+        {
+            if (i == botIndex || !bitGrid.get(i)) continue;
             
-            int m_i = manhattanDistance(botIndex, i); // Corrected to use botIndex
-            double likelihood;
-            
-            if (ping) {
-                likelihood = Math.exp(-ALPHA * (m_i - 1));
-            } else {
-                likelihood = 1 - Math.exp(-ALPHA * (m_i - 1));
-            }
+            int m_i = manhattanDistance(botIndex, i);
+            double likelihood = ping ? Math.exp(-ALPHA * (m_i - 1)) : 1 - Math.exp(-ALPHA * (m_i - 1));
             
             posterior[i] = likelihood * probabilityGrid[i];
             sumPosterior += posterior[i];
         }
         
-        // Normalize the posterior probabilities
-        for (int i = 0; i < SIZE * SIZE; i++) {
-            if (i == botIndex) {
-                probabilityGrid[i] = 0; // Ensure the bot's position has zero probability
-                continue;
+        // Normalize posterior probabilities
+        for (int i = 0; i < SIZE * SIZE; i++)
+        {
+            if (i != botIndex)
+            {
+                probabilityGrid[i] = posterior[i] / sumPosterior;
             }
-            probabilityGrid[i] = posterior[i] / sumPosterior;
         }
     }
     
-    private boolean pingDevice() {
+    private boolean pingDevice ()
+    {
         timeSteps++;
         int d = manhattanDistance(botIndex, ratIndex);
-        
         double probability = Math.exp(-ALPHA * (d - 1));
-        
         return Math.random() < probability;
     }
     
-    private int manhattanDistance(int index1, int index2) {
+    private static int manhattanDistance (int index1, int index2)
+    {
         int x1 = index1 % SIZE;
         int y1 = index1 / SIZE;
         int x2 = index2 % SIZE;
@@ -164,19 +274,27 @@ public class Rat {
     }
     
     @Override
-    public String toString() {
+    public String toString ()
+    {
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE; j++) {
+        for (int i = 0; i < SIZE; i++)
+        {
+            for (int j = 0; j < SIZE; j++)
+            {
                 int index = i * SIZE + j;
-                if (index == botIndex) {
+                if (index == botIndex)
+                {
                     sb.append("\033[32m"); // Green text for bot
-                } else if (index == ratIndex) {
+                }
+                else if (index == ratIndex)
+                {
                     sb.append("\033[31m"); // Red text for rat
-                } else if (!ship.isOpen(index)) {
+                }
+                else if (!bitGrid.get(index))
+                {
                     sb.append("\033[30m"); // Black text for closed cells
                 }
-                sb.append(String.format("%.2f", probabilityGrid[index])).append("\t\033[0m");
+                sb.append(String.format("%.3f", probabilityGrid[index])).append("\t\033[0m");
             }
             sb.append("\n");
         }

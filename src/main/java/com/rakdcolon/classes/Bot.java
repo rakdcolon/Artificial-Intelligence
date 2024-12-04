@@ -1,11 +1,12 @@
-package com.rakdcolon;
+package com.rakdcolon.classes;
 
-import java.util.ArrayList;
-import java.util.List;
+import com.rakdcolon.Main;
+import com.rakdcolon.classes.util.RandomizedSet;
+
+import java.util.*;
 
 /**
- * The Bot class represents an automated entity that interacts with a grid-based game.
- * It uses a randomized set of potential cells to make moves and updates its position based on certain conditions.
+ * The Bot class represents a bot that is used to find the bot on the grid.
  */
 public class Bot
 {
@@ -14,321 +15,340 @@ public class Bot
      */
     private static final int SIZE = Main.SIZE;
     
-    private static final int VERSION = Main.VERSION;
-    
     /**
-     * The primary directions for movement in the grid.
+     * The possible movement directions for the bot.
      */
-    private static final int[] DIRECTIONS = { -SIZE, SIZE, -1, 1 };
+    private static final int[] DIRECTIONS = {-SIZE, SIZE, -1, 1};
     
     /**
-     * All possible directions for scanning in the grid, including diagonals.
+     * All possible scanning directions for the bot.
      */
-    private static final int[] ALL_DIRECTIONS = { -SIZE - 1, -SIZE, -SIZE + 1, 1, SIZE + 1, SIZE, SIZE - 1, -1 };
+    private static final int[] ALL_DIRECTIONS = {-SIZE - 1, -SIZE, -SIZE + 1, 1, SIZE + 1, SIZE, SIZE - 1, -1};
     
     /**
-     * The ship object that the bot interacts with.
+     * Random number generator used for generating random cells.
      */
-    private final Ship ship;
+    private static final Random random = new Random();
     
     /**
-     * The current index of the bot in the grid.
+     * The grid represented as a BitSet.
      */
-    private int botIndex;
+    private final BitSet bitGrid;
     
     /**
-     * The grid used for scanning, where each cell contains a count of adjacent open cells.
+     * The grid used for scanning, represented as an array of integers.
      */
     private final int[] scanGrid = new int[SIZE * SIZE];
     
     /**
-     * A set of potential cells that the bot can move to.
+     * The set of candidate positions for the bot.
      */
-    private final RandomizedSet potentialCells = new RandomizedSet();
+    private RandomizedSet candidates = new RandomizedSet(SIZE);
     
     /**
-     * The number of time steps taken to find the bot.
+     * The set of seen positions for the bot.
+     */
+    private final RandomizedSet seen = new RandomizedSet(SIZE);
+    
+    /**
+     * The current index of the bot.
+     */
+    private int botIndex;
+    
+    /**
+     * The number of time steps taken by the bot.
      */
     private int timeSteps = 0;
     
-    private final RandomizedSet seen = new RandomizedSet();
+    /**
+     * The history of the last few moves made by the bot.
+     */
+    private final Deque<Integer> moveHistory = new ArrayDeque<>();
     
     /**
-     * Constructs a Bot object with the specified Ship.
-     * Initializes the bot's position and scans the grid to determine potential cells for movement.
+     * The limit on the number of moves to track in the move history.
+     */
+    private static final int MOVE_HISTORY_LIMIT = 1;
+    
+    /**
+     * The limit on the number of while loop iterations.
+     */
+    private static final int MAX_ITERATIONS = 512;
+    
+    /**
+     * Constructs a Bot with the specified grid.
      *
-     * @param ship the Ship object that the bot interacts with
+     * @param bitGrid the grid represented as a BitSet
      */
-    public Bot (Ship ship)
+    public Bot (BitSet bitGrid)
     {
-        this.ship = ship;
-        
-        for (int i = 0; i < SIZE * SIZE; i++) {
-            botIndex = ship.getRandomCell();
-            if (ship.isOpen(botIndex)) {
-                break;
-            }
-        }
-        if (!ship.isOpen(botIndex)) {
-            throw new IllegalStateException("Bot could not be placed after " + (SIZE * SIZE) + " attempts.");
-        }
-        
-        initializeScanGrid();
-        add();
-        timeSteps++;
-        seen.add(botIndex);
-        
-        for (int i = 0; i < SIZE * 10; i++)
-        {
-            if (VERSION == 1) makeMove1();
-            else makeMove2();
-            timeSteps++;
-            removePotentialCells();
-            timeSteps++;
-            if (potentialCells.size() <= 1) break;
-        }
-        
-        if (!potentialCells.contains(botIndex) || potentialCells.size() != 1)
-        {
-            System.out.println(this);
-            throw new IllegalStateException("Bot was not found: " + botIndex + " in potential cells: " + potentialCells.getList());
-        }
+        this.bitGrid = bitGrid;
+        placeBot();
     }
     
     /**
-     * Initializes the scan grid by assigning a scan value to each cell.
-     * The scan value is one byte (8 bits) that represents how "open" a cell is.
-     * Each bit in the scan value corresponds to a direction in the grid.
-     * A bit is turned off if the neighboring cell in that direction is closed.
-     * <p>
-     * This method finds closed cells and turns off bits for the neighboring open cells.
+     * Returns the number of time steps taken by the bot.
+     *
+     * @return the number of time steps
      */
-    private void initializeScanGrid ()
+    public int getTimeSteps ()
     {
-        // Iterate over each cell in the grid
-        for (int i = 0; i < SIZE * SIZE; i++)
-        {
-            // If the cell is open, initialize the scan value to 1111 1111 (255)
-            if (ship.isOpen(i))
-            {
-                scanGrid[i] += 255;
-                continue;
-            }
-            
-            // Iterate over each neighboring cell of the current closed cell
-            for (int j = 0; j < ALL_DIRECTIONS.length; j++)
-            {
-                int neighbor = i + ALL_DIRECTIONS[j];
-                
-                // If the neighboring cell is within bounds and open,
-                if (ship.withinBounds(neighbor % SIZE, neighbor / SIZE) && ship.isOpen(neighbor))
-                {
-                    // turn off the corresponding direction bit in the scan value of the open neighbor.
-                    scanGrid[neighbor] -= 1 << j;
-                }
-            }
-            
-            if (scanGrid[i] < 0 || scanGrid[i] > 255)
-            {
-                throw new IllegalStateException("Invalid scan value at index " + i + ": " + scanGrid[i]);
-            }
-        }
+        return this.timeSteps;
     }
     
     /**
-     * Returns the current index of the bot in the grid.
+     * Returns the current index of the bot on the grid.
      *
      * @return the current index of the bot
      */
-    public int getBotIndex()
+    public int getBotIndex ()
     {
-        return botIndex;
+        return this.botIndex;
     }
     
     /**
-     * Removes potential cells from the set of potential cells that do not match the scan value of the bot's current index.
-     * Iterates over the potential cells and removes those whose scan value does not match the scan value of the bot's current index.
+     * Runs the bot finder algorithm to locate the bot on the grid.
      */
-    private void removePotentialCells()
+    public void runBotFinder ()
     {
-        int scan = scanGrid[botIndex];
+        initializeScanGrid();
         
-        List<Integer> list = new ArrayList<>();
-        for (int element : potentialCells)
+        int scan = scan(); // Initial scan
+        candidates = findInitialCandidates(scan);
+        
+        int debugCounter = 0;
+        
+        while (candidates.size() != 1 && debugCounter < MAX_ITERATIONS)
         {
-            if (scanGrid[element] != scan)
-            {
-                list.add(element);
-            }
+            move();
+            scan = scan();
+            removeCandidates(scan);
+            
+            debugCounter++;
         }
         
-        for (int element : list)
-        {
-            if (element == botIndex)
-            {
-                System.out.println(this);
-                throw new IllegalStateException("Attempted removal of bot index: " + botIndex);
-            }
-            potentialCells.remove(element);
-        }
-        
-        if (potentialCells.isEmpty())
-        {
-            throw new IllegalStateException("No potential cells left for the bot to move.");
-        }
-    }
-    
-    private void makeMove1 ()
-    {
-        int max = 0;
-        int chosenDirection = 0;
-        
-        for (int direction : DIRECTIONS)
-        {
-            for (int element : potentialCells)
-            {
-                int neighbor = element + direction;
-                
-                if (!ship.withinBounds(neighbor % SIZE, neighbor / SIZE) || !ship.isOpen(neighbor))
-                {
-                    continue;
-                }
-                
-                if (seen.contains(neighbor))
-                {
-                    continue;
-                }
-                
-                int neighborScan = scanGrid[neighbor];
-                
-                if (neighborScan > max)
-                {
-                    max = neighborScan;
-                    chosenDirection = direction;
-                }
-            }
-        }
-        
-        if (chosenDirection == 0)
-        {
-            chosenDirection = randomDirection();
-        }
-        
-        botIndex += chosenDirection;
-        potentialCells.incrementAll(chosenDirection);
-        seen.addAll(potentialCells);
+        if (debugCounter == MAX_ITERATIONS) System.err.println("Debug Counter Reached");
     }
     
     /**
-     * Makes a move for the bot based on the potential cells and the directions.
-     * The bot evaluates the potential cells in each direction (up, down, left, right) and moves to the direction with the most potential cells.
-     * Updates the bot's index and the potential cells accordingly.
+     * Places the bot on the grid at a random open cell.
      */
-    private void makeMove2 ()
+    private void placeBot ()
     {
-        RandomizedSet up = new RandomizedSet();
-        RandomizedSet down = new RandomizedSet();
-        RandomizedSet left = new RandomizedSet();
-        RandomizedSet right = new RandomizedSet();
-        
-        for (int direction : DIRECTIONS)
+        do
         {
-            int directionCheck = botIndex + direction;
-            if (!ship.withinBounds(directionCheck % SIZE, directionCheck / SIZE) || !ship.isOpen(directionCheck))
+            int x = random.nextInt(1, SIZE - 1);
+            int y = random.nextInt(1, SIZE - 1);
+            
+            botIndex = y * SIZE + x;
+        } while (!bitGrid.get(botIndex));
+    }
+    
+    /**
+     * Given a scan, remove all potential candidates that don't match said scan.
+     *
+     * @param scan the scan to match
+     */
+    private void removeCandidates (int scan)
+    {
+        RandomizedSet candidatesToRemove = new RandomizedSet();
+        
+        for (int candidate : candidates)
+        {
+            if (scanGrid[candidate] != scan)
             {
-                continue;
+                candidatesToRemove.add(candidate);
+            }
+        }
+        
+        candidates.removeAll(candidatesToRemove);
+    }
+    
+    /**
+     * Finds and returns all cells on the scan grid that match the initial scan
+     *
+     * @param scan the initial scan to match
+     *
+     * @return a set of all cells that match the initial scan
+     */
+    private RandomizedSet findInitialCandidates (int scan)
+    {
+        RandomizedSet initialCandidates = new RandomizedSet();
+        
+        for (int i = 0; i < SIZE * SIZE; i++)
+        {
+            if (scanGrid[i] == scan)
+            {
+                initialCandidates.add(i);
+            }
+        }
+        
+        return initialCandidates;
+    }
+    
+    /**
+     * Returns the scan value of the bot's cell
+     *
+     * @return the scan value of the bot's cell
+     */
+    private int scan ()
+    {
+        timeSteps++;
+        return scanGrid[botIndex];
+    }
+    
+    /**
+     * Moves the bot to a new cell based on the current candidates.
+     */
+    private void move ()
+    {
+        timeSteps++;
+        
+        int move = findMove(candidates);
+        
+        // Prevent repeated moves
+        while (moveHistory.contains(move))
+        {
+            move = DIRECTIONS[random.nextInt(4)]; // Pick a new random move
+        }
+        
+        // Add move to history
+        moveHistory.add(move);
+        if (moveHistory.size() > MOVE_HISTORY_LIMIT)
+        {
+            moveHistory.poll(); // Remove the oldest move if history exceeds limit
+        }
+        
+        if (bitGrid.get(botIndex + move)) // If move doesn't run into wall
+        {
+            RandomizedSet candidatesToRemove = new RandomizedSet();
+            
+            for (int candidate : candidates) // Get all candidates
+            {
+                if (!bitGrid.get(candidate + move)) // If candidate runs into wall
+                {
+                    candidatesToRemove.add(candidate); // Add candidate to remove set
+                    seen.add(candidate + move); // Add candidate to seen set
+                }
             }
             
-            if (seen.contains(directionCheck))
+            candidates.removeAll(candidatesToRemove); // Remove all candidates that run into wall
+            
+            seen.addAll(candidates); // Add candidates to seen set
+            
+            botIndex += move; // Update botIndex
+            candidates.incrementAll(move); // Update candidates
+            
+        }
+        else // If move runs into wall
+        {
+            RandomizedSet candidatesToRemove = new RandomizedSet();
+            
+            for (int candidate : candidates) // Get all candidates
             {
-                continue;
+                if (bitGrid.get(candidate + move)) // If candidate doesn't run into wall
+                {
+                    candidatesToRemove.add(candidate); // Remove candidate from set
+                    seen.add(candidate + move); // Add candidate to seen set
+                }
             }
             
-            for (int element : potentialCells)
+            candidates.removeAll(candidatesToRemove); // Remove all candidates that don't run into wall
+        }
+    }
+    
+    /**
+     * Algorithm to find the best move for the bot.
+     *
+     * @param candidates the set of candidate cells
+     *
+     * @return the best move for the bot
+     */
+    private int findMove (RandomizedSet candidates)
+    {
+        RandomizedSet N = new RandomizedSet(SIZE);
+        RandomizedSet E = new RandomizedSet(SIZE);
+        RandomizedSet S = new RandomizedSet(SIZE);
+        RandomizedSet W = new RandomizedSet(SIZE);
+        
+        for (int candidate : candidates)
+        {
+            for (int direction : DIRECTIONS)
             {
-                int neighbor = element + direction;
+                int neighbor = candidate + direction;
                 
-                int neighborScan = scanGrid[neighbor];
+                if (seen.contains(neighbor)) continue;
                 
-                switch(direction)
+                switch (direction)
                 {
                     case -SIZE:
-                        up.add(neighborScan);
-                        break;
-                    case SIZE:
-                        down.add(neighborScan);
-                        break;
-                    case -1:
-                        left.add(neighborScan);
+                        N.add(scanGrid[neighbor]);
                         break;
                     case 1:
-                        right.add(neighborScan);
+                        E.add(scanGrid[neighbor]);
+                        break;
+                    case SIZE:
+                        S.add(scanGrid[neighbor]);
+                        break;
+                    case -1:
+                        W.add(scanGrid[neighbor]);
                         break;
                 }
             }
         }
         
-        int direction = chooseDirection(up, down, left, right);
+        int n = N.size();
+        int e = E.size();
+        int s = S.size();
+        int w = W.size();
         
-        if (direction == 0)
-        {
-            direction = randomDirection();
-        }
-        
-        botIndex += direction;
-        potentialCells.incrementAll(direction);
-        seen.addAll(potentialCells);
+        if (n > e && n > s && n > w) return -SIZE;
+        else if (e > n && e > s && e > w) return 1;
+        else if (s > n && s > e && s > w) return SIZE;
+        else if (w > n && w > e && w > s) return -1;
+        else return DIRECTIONS[random.nextInt(4)]; // Random choice for tie
     }
     
-    private int randomDirection ()
-    {
-        int direction = DIRECTIONS[(int) (Math.random() * DIRECTIONS.length)];
-        int directionCheck = botIndex + direction;
-        while (!ship.withinBounds(directionCheck % SIZE, directionCheck / SIZE) || !ship.isOpen(directionCheck))
-        {
-            direction = DIRECTIONS[(int) (Math.random() * DIRECTIONS.length)];
-            directionCheck = botIndex + direction;
-        }
-        return direction;
-    }
-    
-    private int chooseDirection (RandomizedSet up, RandomizedSet down, RandomizedSet left, RandomizedSet right)
-    {
-        int u = up.size();
-        int d = down.size();
-        int l = left.size();
-        int r = right.size();
-        
-        if (up.isEmpty() && down.isEmpty() && left.isEmpty() && right.isEmpty())
-        {
-            return 0;
-        }
-        else if (u >= d && u >= l && u >= r)
-        {
-            return -SIZE;
-        }
-        else if (d >= u && d >= l && d >= r)
-        {
-            return SIZE;
-        }
-        else if (l >= u && l >= d && l >= r)
-        {
-            return -1;
-        }
-        
-        return 1;
-    }
-    
-    private void add()
+    /**
+     * Initializes the scan grid with the number of adjacent closed cells for each open cell.
+     */
+    private void initializeScanGrid ()
     {
         for (int i = 0; i < SIZE * SIZE; i++)
         {
-            if (scanGrid[i] == scanGrid[botIndex])
+            if (!bitGrid.get(i))
             {
-                potentialCells.add(i);
+                scanGrid[i] = 8;
+                
+                for (int direction : ALL_DIRECTIONS)
+                {
+                    int neighbor = i + direction;
+                    int x = neighbor % SIZE;
+                    int y = neighbor / SIZE;
+                    
+                    if (withinBounds(x, y) && bitGrid.get(neighbor))
+                    {
+                        scanGrid[neighbor]++;
+                    }
+                }
             }
         }
     }
+    
+    
+    /**
+     * Checks if a cell's coordinates are within the valid bounds of the grid.
+     *
+     * @param x the x-coordinate of the cell
+     * @param y the y-coordinate of the cell
+     *
+     * @return true if the cell is within bounds, false otherwise
+     */
+    private boolean withinBounds (int x, int y)
+    {
+        return x > 0 && x < SIZE - 1 && y > 0 && y < SIZE - 1;
+    }
+    
     
     /**
      * Returns the grid as a string.
@@ -338,9 +358,10 @@ public class Bot
      * @return the grid as a string
      */
     @Override
-    public String toString()
+    public String toString ()
     {
         StringBuilder sb = new StringBuilder();
+        
         for (int y = 0; y < SIZE; y++)
         {
             for (int x = 0; x < SIZE; x++)
@@ -349,15 +370,15 @@ public class Bot
                 
                 if (index == botIndex)
                 {
-                    sb.append("\033[231m").append(scanGrid[index]).append("\033[0m").append("\t");
+                    sb.append("\033[52m ").append(scanGrid[index]).append(" \033[0m").append("\t");
                 }
-                else if (ship.isOpen(index))
+                else if (bitGrid.get(index))
                 {
-                    sb.append("\033[31m").append(scanGrid[index]).append("\033[0m").append("\t");
+                    sb.append("\033[31m ").append(scanGrid[index]).append(" \033[0m").append("\t");
                 }
                 else
                 {
-                    sb.append("\033[30m").append(scanGrid[index]).append("\033[0m").append("\t");
+                    sb.append("\033[30m ").append(scanGrid[index]).append(" \033[0m").append("\t");
                 }
             }
             sb.append("\n");
@@ -365,8 +386,17 @@ public class Bot
         return sb.toString();
     }
     
-    public int getTimeSteps ()
+    /**
+     * Checks if the scanGrid of a bot is equal to another bot's scanGrid.
+     *
+     * @return true if the scanGrids are equal, false otherwise
+     */
+    @Override
+    public boolean equals (Object obj)
     {
-        return timeSteps;
+        if (this == obj) return true;
+        if (obj == null || getClass() != obj.getClass()) return false;
+        Bot bot = (Bot) obj;
+        return Arrays.equals(scanGrid, bot.scanGrid);
     }
 }
